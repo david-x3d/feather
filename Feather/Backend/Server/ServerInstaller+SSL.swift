@@ -11,24 +11,17 @@ import SwiftASN1
 import X509
 
 extension ServerInstaller {
-	static let serverHostname = "feather.localhost"
+	static let serverHostname = "feather.backloop.dev"
+	static let localCertificateDirectory = URL.applicationSupportDirectory.appendingPathComponent("LocalCA", isDirectory: true)
 
-	@discardableResult 
+	@discardableResult
 	static func createServerCert() throws -> (crt: URL, pem: URL) {
-		let certificateURL = URL.documentsDirectory.appendingPathComponent("server.crt")
-		let privateKeyURL = URL.documentsDirectory.appendingPathComponent("server.pem")
-		
-		if
-			FileManager.default.fileExists(atPath: certificateURL.path), 
-			FileManager.default.fileExists(atPath: privateKeyURL.path) 
-		{
-			return (certificateURL, privateKeyURL)
-		}
+		let certificateURL = localCertificateDirectory.appendingPathComponent("local-server.crt")
+		let privateKeyURL = localCertificateDirectory.appendingPathComponent("local-server.pem")
 		
 		let root = try rootMaterial()
 		let serverPrivateKey = X509.Certificate.PrivateKey(P256.Signing.PrivateKey())
 		
-
 		let name = try DistinguishedName {
 			CommonName(Self.serverHostname)
 		}
@@ -45,6 +38,7 @@ extension ServerInstaller {
 			try ExtendedKeyUsage([.serverAuth])
 			SubjectAlternativeNames([
 				.dnsName(Self.serverHostname),
+				.ipAddress(ASN1OctetString(contentBytes: [127, 0, 0, 1])),
 			])
 			SubjectKeyIdentifier(hash: serverPrivateKey.publicKey)
 			AuthorityKeyIdentifier(keyIdentifier: SubjectKeyIdentifier(hash: root.certificate.publicKey).keyIdentifier)
@@ -54,7 +48,7 @@ extension ServerInstaller {
 			version: .v3,
 			serialNumber: X509.Certificate.SerialNumber(),
 			publicKey: serverPrivateKey.publicKey,
-			notValidBefore: now,
+			notValidBefore: now.addingTimeInterval(-300),
 			notValidAfter: now.addingTimeInterval(60 * 60 * 24 * 365),
 			issuer: root.certificate.subject,
 			subject: name,
@@ -64,32 +58,43 @@ extension ServerInstaller {
 		)
 
 		try Data(serverCertificate.serializeAsPEM().pemString.utf8).write(to: certificateURL, options: .atomic)
-		try Data(serverPrivateKey.serializeAsPEM().pemString.utf8).write(to: privateKeyURL, options: .atomic)
+		try Data(serverPrivateKey.serializeAsPEM().pemString.utf8).write(to: privateKeyURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
 		
 		return (certificateURL, privateKeyURL)
 	}
 	
-	static func rootCertificateDataURL() throws -> URL {
+	static func rootCertificateProfile() throws -> Data {
 		let root = try rootMaterial()
-		let base64 = root.der.base64EncodedString()
-
-		guard let url = URL(
-			string: "data:application/x-x509-ca-cert;base64,\(base64)"
-		) else {
-			throw CocoaError(.fileReadCorruptFile)
-		}
-
-		return url
+		let certificate: [String: Any] = [
+			"PayloadType": "com.apple.security.root",
+			"PayloadVersion": 1,
+			"PayloadIdentifier": "app.feather.local-ca.certificate",
+			"PayloadUUID": UUID().uuidString,
+			"PayloadDisplayName": "Feather Local Root CA",
+			"PayloadContent": root.der,
+		]
+		let profile: [String: Any] = [
+			"PayloadType": "Configuration",
+			"PayloadVersion": 1,
+			"PayloadIdentifier": "app.feather.local-ca",
+			"PayloadUUID": UUID().uuidString,
+			"PayloadDisplayName": "Feather Local Root CA",
+			"PayloadContent": [certificate],
+		]
+		return try PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
 	}
 
 	private static func rootMaterial() throws -> RootMaterialModel {
+		try FileManager.default.createDirectory(at: localCertificateDirectory, withIntermediateDirectories: true)
 		let rootPrivateKey = try createRootKey()
-		let certificateURL = URL.documentsDirectory.appendingPathComponent("FeatherLocalCA.cer")
+		let certificateURL = localCertificateDirectory.appendingPathComponent("FeatherLocalCA.cer")
 		
 		if FileManager.default.fileExists(atPath: certificateURL.path) {
 			let der = try Data(contentsOf: certificateURL)
 			if let certificate = try? X509.Certificate(derEncoded: Array(der)),
-				certificate.publicKey == rootPrivateKey.publicKey {
+				certificate.publicKey == rootPrivateKey.publicKey,
+				certificate.notValidBefore <= Date(),
+				certificate.notValidAfter > Date().addingTimeInterval(60 * 60 * 24 * 365) {
 					return RootMaterialModel(privateKey: rootPrivateKey, certificate: certificate, der: der)
 			}
 		}
@@ -109,7 +114,7 @@ extension ServerInstaller {
 		let now = Date()
 		let extensions = try X509.Certificate.Extensions {
 			Critical(
-				BasicConstraints.isCertificateAuthority(maxPathLength: nil)
+				BasicConstraints.isCertificateAuthority(maxPathLength: 0)
 			)
 			Critical(
 				KeyUsage(keyCertSign: true)
@@ -121,7 +126,7 @@ extension ServerInstaller {
 			version: .v3,
 			serialNumber: X509.Certificate.SerialNumber(),
 			publicKey: key.publicKey,
-			notValidBefore: now,
+			notValidBefore: now.addingTimeInterval(-300),
 			notValidAfter: now.addingTimeInterval(60 * 60 * 24 * 365 * 10),
 			issuer: name,
 			subject: name,
@@ -132,13 +137,13 @@ extension ServerInstaller {
 	}
 	
 	private static func createRootKey() throws -> X509.Certificate.PrivateKey {
-		let keyURL = URL.documentsDirectory.appendingPathComponent("root.key")
+		let keyURL = localCertificateDirectory.appendingPathComponent("root.key")
 		if FileManager.default.fileExists(atPath: keyURL.path) {
 			let key = try P256.Signing.PrivateKey(rawRepresentation: Data(contentsOf: keyURL))
 			return X509.Certificate.PrivateKey(key)
 		}
 		let key = P256.Signing.PrivateKey()
-		try key.rawRepresentation.write(to: keyURL, options: [.atomic, .completeFileProtection])
+		try key.rawRepresentation.write(to: keyURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
 		return X509.Certificate.PrivateKey(key)
 	}
 }

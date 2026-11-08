@@ -5,6 +5,7 @@
 //  Created by Nagata Asami on 17/9/26.
 //
 
+import Foundation
 import X509
 
 struct RootMaterialModel {

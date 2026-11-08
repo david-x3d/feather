@@ -13,6 +13,7 @@ import NIOSSL
 import NIOTLS
 import SwiftUI
 import IDeviceSwift
+import NimbleExtensions
 
 // MARK: - Class
 class ServerInstaller: Identifiable, ObservableObject {
@@ -25,21 +26,47 @@ class ServerInstaller: Identifiable, ObservableObject {
 	@ObservedObject var viewModel: InstallerStatusViewModel
 	private var _server: Application?
 
-	init(app: AppInfoPresentable, viewModel: InstallerStatusViewModel) throws {
+	init(app: AppInfoPresentable, viewModel: InstallerStatusViewModel) {
 		self.app = app
 		self.viewModel = viewModel
+	}
+
+	func start() throws {
+		guard _server == nil else { return }
 		try _setup()
-		try _configureRoutes()
-		try _server?.server.start()
 		_needsShutdown = true
+		do {
+			try _configureRoutes()
+			try _server?.server.start()
+		} catch {
+			_shutdownServer()
+			throw error
+		}
 	}
 	
+	func checkConnection() async throws {
+		guard getServerMethod() == 0 else { return }
+		let session = URLSession(configuration: .ephemeral)
+		defer { session.invalidateAndCancel() }
+		do {
+			let (_, response) = try await session.data(for: URLRequest(url: pageEndpoint, timeoutInterval: 10))
+			guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+				throw URLError(.badServerResponse)
+			}
+		} catch {
+			throw NSError(domain: "Feather.LocalServer", code: 1, userInfo: [
+				NSLocalizedDescriptionKey: String.localized("Could not connect to the local HTTPS server. Install Local CA in Settings > Installation, install the downloaded profile, and enable full trust for Feather Local Root CA in Certificate Trust Settings."),
+				NSUnderlyingErrorKey: error,
+			])
+		}
+	}
+
 	deinit {
 		_shutdownServer()
 	}
 	
 	private func _setup() throws {
-		self._server = try? setupApp(port: port)
+		self._server = try setupApp(port: port)
 	}
 		
 	private func _configureRoutes() throws {
@@ -93,6 +120,7 @@ class ServerInstaller: Identifiable, ObservableObject {
 		_needsShutdown = false
 		_server?.server.shutdown()
 		_server?.shutdown()
+		_server = nil
 	}
 	
 	private func _updateStatus(_ newStatus: InstallerStatusViewModel.InstallerStatus) {

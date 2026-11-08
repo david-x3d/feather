@@ -1,0 +1,56 @@
+name: Local CA test IPA
+
+on:
+  push:
+    branches: [build/local-ca-test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+      - name: Xcode version
+        id: xcode
+        run: |
+          xcodebuild -version
+          echo "build=$(xcodebuild -version | tr -cd '[:alnum:]')" >> "$GITHUB_OUTPUT"
+      - name: Cache Xcode build files
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/Feather
+          key: feather-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('**/Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            feather-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('**/Package.resolved') }}-
+      - name: Build test app
+        run: |
+          xcodebuild \
+            -project Feather.xcodeproj \
+            -scheme Feather \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/Feather" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
+            FEATHER_PRODUCT_BUNDLE_IDENTIFIER=thewonderofyou.Feather.LocalCATest \
+            'INFOPLIST_KEY_CFBundleDisplayName=Feather CA Test'
+      - name: Package IPA
+        run: |
+          mkdir -p packages Payload
+          cp -R _build/Applications/Feather.app Payload/Feather.app
+          codesign --force --sign - --timestamp=none Payload/Feather.app
+          ditto -c -k --sequesterRsrc --keepParent Payload packages/Feather-LocalCA-Test.ipa
+      - name: Upload test IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Feather-LocalCA-Test
+          path: packages/Feather-LocalCA-Test.ipa
+          retention-days: 7

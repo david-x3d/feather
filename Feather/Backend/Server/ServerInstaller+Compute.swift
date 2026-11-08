@@ -94,9 +94,10 @@ extension ServerInstaller {
 	}
 
 	var html: String {
-		"""
+		let link = getServerMethod() == 1 ? iTunesLinkExternal : iTunesLink
+		return """
 		<html style="background-color: black;">
-		<script type="text/javascript">window.location="\(iTunesLinkExternal)"</script>
+		<script type="text/javascript">window.location="\(link)"</script>
 		</html>
 		"""
 	}
